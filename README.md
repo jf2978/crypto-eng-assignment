@@ -1,8 +1,8 @@
 # CoinTracker Engineering Assignment
 
-Original instructions [here](https://cointracker.notion.site/CoinTracker-Engineering-Assignment-ac869846380545dbb1c8ad4f947a8e29)
-
 Hey CoinTracker team! My name is Jeff, and thanks for taking the time to reading my technical assessment -- I'm geniunely looking forward to working on this take-home (and of course hope you all like what you see haha).
+
+In case you don't already have it handy, the original instructions are [here](https://cointracker.notion.site/CoinTracker-Engineering-Assignment-ac869846380545dbb1c8ad4f947a8e29)
 
 ---
 
@@ -65,3 +65,15 @@ The `transactions` table is responsible for storing blockchain transactions bein
 | timestamp  | TIMESTAMP  | the time this transaction was verified on the blockchain                                                          |
 | created_at | TIMESTAMP  | the point in time this record was created (UTC)                                                                   |
 | tags       | STRING MAX | a comma-delimited list of "tags" that characterizes this transaction and is displayed to the user e.g. "transfer" |
+
+---
+
+## API Design
+
+The actions we want to implement are pretty much outlined in the instructions. As for implementation details, I'll work with more or less vanilla Golang packages `net/http` for standard library HTTP client/server things and `gorilla/mux` to leverage its handy routing functionality.
+
+1. `func add(addr string)`: add adds a BTC wallet if it doesn't already exist and imports its associated transactions
+2. `func balance(addr string) float64`: balance gets the current balance of the give BTC address (note: the returned value can be out of date, if we want the most up-to-date balance, we have to call `sync` first)
+3. `func transactions(addr string) []*Transaction`: transactions gets the current transactions associated with the provided BTC address
+4. `func sync(addr string)`: sync fetches the latest address data from the BTC blockchain and synchronizes the relevant tables accordingly
+5. `func detectTransfers`: **TBD**
