@@ -42,11 +42,31 @@ func InitServer() *Server {
 
 	r := mux.NewRouter()
 
+	// todo: rename routes to better reflect specific functionality (i.e. we're only handling btc addresses)
+	r.Handle("/add", AddHandler())
+
 	return &Server{
 		context: ctx,
 		router:  r,
 		spanner: spannerClient,
 	}
+}
+
+// AddHandler returns a closure responsible for validating the incoming request
+// and invoking add() to create a new BTC address
+func AddHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// todo: validate request
+	})
+}
+
+// add adds a BTC wallet if it doesn't already exist and imports its associated transactions
+func add(string addr) {
+	// todo: check if this address already exists in the addresses table
+
+	// todo: write this new address if DNE
+
+	// todo: automatically sync transactions relevant to this address
 }
 
 func main() {
