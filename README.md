@@ -38,7 +38,7 @@ The `users` table would be responsible for storing a naive implementation of a u
 
 | field     | type       | description                       |
 |-----------|------------|-----------------------------------|
-| uuid      | STRING MAX | unique identifier for this user   |
+| uuid (pk) | STRING MAX | unique identifier for this user   |
 | username  | STRING MAX | human-readable name for this user |
 | addresses | STRING MAX | comma-delimited list of addresses |
 
@@ -48,7 +48,7 @@ The `addresses` table stores the public key addresses added to the app
 
 | field         | type       | description                                                 |
 |---------------|------------|-------------------------------------------------------------|
-| public_key    | STRING MAX | the public key of this address                              |
+| public_key(pk)| STRING MAX | the public key of this address                              |
 | balance       | FLOAT64    | the amount stored at this address                           |
 | created_at    | TIMESTAMP  | the point in time this record was created (UTC)             |
 | updated_at    | TIMESTAMP  | the point in time this record was last updated (UTC)        |
@@ -56,15 +56,15 @@ The `addresses` table stores the public key addresses added to the app
 
 The `transactions` table is responsible for storing blockchain transactions being tracked (append-only)
 
-| field      | type       | description                                                                                                       |
-|------------|------------|-------------------------------------------------------------------------------------------------------------------|
-| txn_hash   | STRING MAX | this transactions identifier hash                                                                                 |
-| from_addr  | STRING MAX | the source address for this transaction                                                                           |
-| to_addr    | STRING MAX | the destination address for this transaction                                                                      |
-| amount     | FLOAT64    | the value being transacted                                                                                        |
-| timestamp  | TIMESTAMP  | the time this transaction was verified on the blockchain                                                          |
-| created_at | TIMESTAMP  | the point in time this record was created (UTC)                                                                   |
-| tags       | STRING MAX | a comma-delimited list of "tags" that characterizes this transaction and is displayed to the user e.g. "transfer" |
+| field       | type       | description                                                                                                       |
+|-------------|------------|-------------------------------------------------------------------------------------------------------------------|
+| txn_hash(pk)| STRING MAX | this transactions identifier hash                                                                                 |
+| from_addr   | STRING MAX | the source address for this transaction                                                                           |
+| to_addr     | STRING MAX | the destination address for this transaction                                                                      |
+| amount      | FLOAT64    | the value being transacted                                                                                        |
+| timestamp   | TIMESTAMP  | the time this transaction was verified on the blockchain                                                          |
+| created_at  | TIMESTAMP  | the point in time this record was created (UTC)                                                                   |
+| tags        | STRING MAX | a comma-delimited list of "tags" that characterizes this transaction and is displayed to the user e.g. "transfer" |
 
 ---
 
