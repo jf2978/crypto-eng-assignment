@@ -56,15 +56,15 @@ The `addresses` table stores the public key addresses added to the app
 
 The `transactions` table is responsible for storing blockchain transactions being tracked (append-only)
 
-| field       | type       | description                                                                                                       |
-|-------------|------------|-------------------------------------------------------------------------------------------------------------------|
-| txn_hash(pk)| STRING MAX | this transactions identifier hash                                                                                 |
-| from_addr   | STRING MAX | the source address for this transaction                                                                           |
-| to_addr     | STRING MAX | the destination address for this transaction                                                                      |
-| amount      | FLOAT64    | the value being transacted                                                                                        |
-| timestamp   | TIMESTAMP  | the time this transaction was verified on the blockchain                                                          |
-| created_at  | TIMESTAMP  | the point in time this record was created (UTC)                                                                   |
-| tags        | STRING MAX | a comma-delimited list of "tags" that characterizes this transaction and is displayed to the user e.g. "transfer" |
+| field           | type                | description                                                                                              |
+|-----------------|---------------------|----------------------------------------------------------------------------------------------------------|
+| txn_hash(pk)    | STRING MAX          | this transactions identifier hash                                                                        |
+| txn_timestamp   | TIMESTAMP           | the time this transaction was verified on theblockchain                                                  |
+| addresses       | ARRAY<STRING(MAX)>  | the participating addresses (public keys) in this txn                                                    |
+| amount          | FLOAT64             | the value being transacted in USD                                                                        |
+| fee             | FLOAT64             | the fee incurred for this transacton in USD                                                              |
+| created_at      | TIMESTAMP           | the point in time this record was created (UTC)                                                          |
+| tags            | STRING MAX          | a comma-delimited list of "tags" that categorize this transaction, e.g. "transfer"                       |
 
 ---
 

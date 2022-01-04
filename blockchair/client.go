@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	BaseUrl        = "https://api.blockchair.com/"
-	DefaultTimeout = 10 * time.Second
+	BaseUrl          = "https://api.blockchair.com/"
+	DefaultTimeout   = 10 * time.Second
+	TransactionLimit = 10000 // maximum allowed by the Blockchair API for dashborad/address endpoints
 )
 
 type Config struct {
@@ -39,6 +40,21 @@ type Address struct {
 	BalanceUSD  float64 `json:"balance_usd"`
 }
 
+type TransactionsResponse struct {
+	Data []*TransactionResponse `json:"data"`
+}
+
+type TransactionResponse struct {
+	Data map[string]*Transaction `json:"data"`
+}
+
+type Transaction struct {
+	Hash      string  `json:"hash"`
+	Timestamp int     `json:"time"`
+	AmountUSD float64 `json:"output_total_usd"`
+	FeeUSD    float64 `json:"fee_usd"`
+}
+
 // NewClient constructs a new Blockchair client
 func NewClient(ctx context.Context) *Client {
 	return &Client{
@@ -53,7 +69,7 @@ func NewClient(ctx context.Context) *Client {
 
 // GetAddressStats queries the Blockchair API for a snapshot view of a given BTC address
 func (b *Client) GetAddressStats(ctx context.Context, addr string) (*AddressStatsResponse, error) {
-	path := fmt.Sprintf("%s/dashboards/address/%s", b.config.BaseURL, addr)
+	path := fmt.Sprintf("%s/dashboards/address/%s?limit=%d", b.config.BaseURL, addr, TransactionLimit)
 
 	resp, err := http.Get(path)
 	if err != nil {
@@ -82,4 +98,20 @@ func (b *Client) GetAddressStats(ctx context.Context, addr string) (*AddressStat
 	fmt.Printf("unmarshalled struct: %v\n", addrStats)
 
 	return &addrStats, nil
+}
+
+// GetTransactions queries the Blockchair API for transaction data by a list ids (hashes)
+// todo: parallelize me with goroutines
+func (b *Client) GetTransactions(ctx context.Context, txnHashes []string) ([]*TransactionsResponse, error) {
+
+	// the blockchair API limits these requests to 10
+	if len(txnHashes) > 10 {
+		return nil, fmt.Errorf("cannot process more than 10 txn hashes at a time")
+	}
+
+	var resp []*TransactionsResponse
+
+	// todo: build the request and call the /transactions endpoint
+
+	return resp, nil
 }

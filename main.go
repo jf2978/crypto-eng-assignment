@@ -12,6 +12,7 @@ import (
 	"cloud.google.com/go/spanner"
 	"github.com/gorilla/mux"
 	"github.com/jf2978/cointracker-eng-assignment/blockchair"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 )
@@ -34,12 +35,28 @@ type BalanceRequest struct {
 	Address string `json:"address"`
 }
 
+// TransactionsRequest represents the expected request body to '/transactions'
+type TransactionsRequest struct {
+	Address string `json:"address"`
+}
+
+// AddressesRecord is the data model for a respective row in the 'addresses' table stored in Spanner
 type AddressesRecord struct {
 	PublicKey   string    `spanner:"public_key"`
 	Balance     float64   `spanner:"balance"`
 	CreatedAt   time.Time `spanner:"created_at"`
 	UpdatedAt   time.Time `spanner:"updated_at"`
 	LastTxnHash string    `spanner:"last_txn_hash"`
+}
+
+// TransactionsRecord is the data model for a respective row in the 'transactions' table stored in Spanner
+type TransactionsRecord struct {
+	TxnHash      string    `spanner:"txn_hash"`
+	TxnTimestamp time.Time `spanner:"txn_timestamp"`
+	From         string    `spanner:"from_addr"`
+	To           string    `spanner:"to_addr"`
+	Tags         string    `spanner:"tags"`
+	CreatedAt    time.Time `spanner:"created_at"`
 }
 
 const (
@@ -132,20 +149,14 @@ func add(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Clie
 		// create this new address
 		var mut *spanner.Mutation
 		if spanner.ErrCode(err) == codes.NotFound {
-			statsResp, err := b.GetAddressStats(ctx, addr)
+			addrStats, err := getAddrStats(ctx, b, addr)
 
-			if err != nil {
-				return err
-			}
-
-			fmt.Printf("stats payload: %v\n", statsResp.Data[addr])
-			addressStats := statsResp.Data[addr]
 			rec := &AddressesRecord{
 				PublicKey:   addr,
-				Balance:     addressStats.Addr.BalanceUSD,
+				Balance:     addrStats.Addr.BalanceUSD,
 				CreatedAt:   now,
 				UpdatedAt:   now,
-				LastTxnHash: addressStats.Txns[0],
+				LastTxnHash: addrStats.Txns[0],
 			}
 
 			mut, err = spanner.InsertStruct(addressesTable, rec)
@@ -206,6 +217,93 @@ func balance(ctx context.Context, s *spanner.Client, addr string) (float64, erro
 	}
 
 	return rec.Balance, nil
+}
+
+// GetTransactionsHandler returns a closure responsible for validating the incoming request
+// and invoking transactions() to fetch the provided address' list of all transactions
+func GetTransactionsHandler(ctx context.Context, s *spanner.Client, b *blockchair.Client) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var txnsReq TransactionsRequest
+		if err := json.Unmarshal(body, &txnsReq); err != nil {
+			http.Error(w, "provided payload is not valid JSON", http.StatusBadRequest)
+			return
+		}
+
+		txns, err := transactions(ctx, txnsReq.Address, s, b)
+
+		if err != nil {
+			http.Error(w, fmt.Sprintf("could not get transactions for address %s\n. %v", txnsReq.Address, err), http.StatusInternalServerError)
+			return
+		}
+
+	})
+}
+
+// transactions gets the current transactions associated with the provided BTC address
+func transactions(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Client) ([]*blockchair.Transaction, error) {
+	_, err := s.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		var txns []*blockchair.Transaction
+
+		// read for transactions associated with this address
+		stmt := spanner.NewStatement(`
+			SELECT t.txn_hash, t.txn_timestamp, t.amount, t.fee, a.last_txn_hash
+			FROM transactions t
+			JOIN addresses a ON a.public_key IN UNNEST(t.addresses)
+			WHERE public_key = @address
+		`)
+		stmt.Params["address"] = addr
+
+		iter := txn.Query(ctx, stmt)
+		defer iter.Stop()
+
+		row, err := iter.Next()
+
+		// if no associated txns found, we need to pull them for the first time
+		if err == iterator.Done {
+			addrStats, err := getAddrStats(ctx, b, addr)
+
+			if err != nil {
+				return err
+			}
+
+			txnHashes := addrStats.Txns
+
+			// todo: insert these transactions in spanner (append-only)
+			// todo: update the addresses table (balance + last_txn_hash)
+		}
+
+		// if we already have some associated transactions, we only have to query for transactioins since the last_txn_hash onwards
+
+		// todo: add the txn data we already have from spanner into our result set
+		// todo: read blockchair api (filtered by timestamp)
+
+		// todo: insert these transactions in spanner (append-only)
+		// todo: update the addresses table (balance + last_txn_hash) -> can be refactored into a helper func
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// todo: add these additional txns to our running rows for this address
+}
+
+// getAddrStats wraps the blockchair API call to GetAddressStats to reduce repeating ourselves
+func getAddrStats(ctx context.Context, b *blockchair.Client, addr string) (*blockchair.AddressStats, error) {
+	statsResp, err := b.GetAddressStats(ctx, addr)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return statsResp.Data[addr], nil
 }
 
 func main() {
