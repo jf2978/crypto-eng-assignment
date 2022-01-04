@@ -11,15 +11,17 @@ import (
 
 	"cloud.google.com/go/spanner"
 	"github.com/gorilla/mux"
+	"github.com/jf2978/cointracker-eng-assignment/blockchair"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 )
 
 // Server represents a basic web server backed by a Google Spanner as a data store
 type Server struct {
-	context context.Context
-	router  *mux.Router
-	spanner *spanner.Client
+	context    context.Context
+	router     *mux.Router
+	spanner    *spanner.Client
+	blockchair *blockchair.Client
 }
 
 // AddRequest represents the expected request body to '/add'
@@ -61,21 +63,24 @@ func InitServer() *Server {
 		log.Fatal(err)
 	}
 
+	blockchairClient := blockchair.NewClient(ctx)
+
 	r := mux.NewRouter()
 
 	// todo: rename routes to better reflect specific functionality (i.e. we're only handling btc addresses)
-	r.Handle("/add", AddHandler(ctx, spannerClient))
+	r.Handle("/add", AddHandler(ctx, spannerClient, blockchairClient))
 
 	return &Server{
-		context: ctx,
-		router:  r,
-		spanner: spannerClient,
+		context:    ctx,
+		router:     r,
+		spanner:    spannerClient,
+		blockchair: blockchairClient,
 	}
 }
 
 // AddHandler returns a closure responsible for validating the incoming request
 // and invoking add() to create a new BTC address
-func AddHandler(ctx context.Context, s *spanner.Client) http.Handler {
+func AddHandler(ctx context.Context, s *spanner.Client, b *blockchair.Client) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
@@ -95,7 +100,7 @@ func AddHandler(ctx context.Context, s *spanner.Client) http.Handler {
 			return
 		}
 
-		if err := add(ctx, addReq.Address, s); err != nil {
+		if err := add(ctx, addReq.Address, s, b); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -103,7 +108,7 @@ func AddHandler(ctx context.Context, s *spanner.Client) http.Handler {
 }
 
 // add adds a BTC wallet if it doesn't already exist and imports its associated transactions
-func add(ctx context.Context, addr string, s *spanner.Client) error {
+func add(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Client) error {
 	_, err := s.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 
 		now := time.Now()
@@ -121,10 +126,20 @@ func add(ctx context.Context, addr string, s *spanner.Client) error {
 		// create this new address
 		var mut *spanner.Mutation
 		if spanner.ErrCode(err) == codes.NotFound {
+			statsResp, err := b.GetAddressStats(ctx, addr)
+
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("stats payload: %v\n", statsResp.Data[addr])
+			addressStats := statsResp.Data[addr]
 			rec := &AddressesRecord{
-				PublicKey: addr,
-				CreatedAt: now,
-				UpdatedAt: now,
+				PublicKey:   addr,
+				Balance:     addressStats.Addr.BalanceUSD,
+				CreatedAt:   now,
+				UpdatedAt:   now,
+				LastTxnHash: addressStats.Txns[0],
 			}
 
 			mut, err = spanner.InsertStruct(addressesTable, rec)
@@ -133,7 +148,7 @@ func add(ctx context.Context, addr string, s *spanner.Client) error {
 			}
 		}
 
-		// todo: automatically sync transactions relevant to this address (+ populate remaining fields)
+		// todo: automatically sync transactions relevant to this address
 
 		return txn.BufferWrite([]*spanner.Mutation{mut})
 	})
