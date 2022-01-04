@@ -29,6 +29,11 @@ type AddRequest struct {
 	Address string `json:"address"`
 }
 
+// BalanceRequest represents the expected request body to '/balance'
+type BalanceRequest struct {
+	Address string `json:"address"`
+}
+
 type AddressesRecord struct {
 	PublicKey   string    `spanner:"public_key"`
 	Balance     float64   `spanner:"balance"`
@@ -69,6 +74,7 @@ func InitServer() *Server {
 
 	// todo: rename routes to better reflect specific functionality (i.e. we're only handling btc addresses)
 	r.Handle("/add", AddHandler(ctx, spannerClient, blockchairClient))
+	r.Handle("/balance", GetBalanceHandler(ctx, spannerClient))
 
 	return &Server{
 		context:    ctx,
@@ -154,6 +160,52 @@ func add(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Clie
 	})
 
 	return err
+}
+
+// GetBalanceHandler returns a closure responsible for validating the incoming request
+// and invoking balance() to fetch the provided address' balance
+func GetBalanceHandler(ctx context.Context, s *spanner.Client) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var balanceReq BalanceRequest
+		if err := json.Unmarshal(body, &balanceReq); err != nil {
+			http.Error(w, "provided payload is not valid JSON", http.StatusBadRequest)
+			return
+		}
+
+		b, err := balance(ctx, s, balanceReq.Address)
+
+		if err != nil {
+			http.Error(w, fmt.Sprintf("could not get balance for address %s\n. %v", balanceReq.Address, err), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(b)
+	})
+}
+
+// balance gets the current balance of the give BTC address
+// note: the returned value can be out of date, if we want the most up-to-date balance, we have to call `sync` first
+func balance(ctx context.Context, s *spanner.Client, addr string) (float64, error) {
+	row, err := s.Single().ReadRow(ctx, addressesTable, spanner.Key{addr}, []string{"balance"})
+
+	if err != nil {
+		return 0, err
+	}
+
+	var rec AddressesRecord
+	if err := row.ToStruct(&rec); err != nil {
+		return 0, err
+	}
+
+	return rec.Balance, nil
 }
 
 func main() {
