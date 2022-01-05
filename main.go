@@ -93,7 +93,7 @@ func InitServer() *Server {
 
 	// todo: rename routes to better reflect specific functionality (i.e. we're only handling btc addresses)
 	r.Handle("/add", AddHandler(ctx, spannerClient, blockchairClient))
-	r.Handle("/balance", GetBalanceHandler(ctx, spannerClient))
+	r.Handle("/balance", GetBalanceHandler(ctx, spannerClient, blockchairClient))
 	r.Handle("/transactions", GetTransactionsHandler(ctx, spannerClient, blockchairClient))
 
 	return &Server{
@@ -126,15 +126,22 @@ func AddHandler(ctx context.Context, s *spanner.Client, b *blockchair.Client) ht
 			return
 		}
 
-		if err := add(ctx, addReq.Address, s, b); err != nil {
+		address, err := add(ctx, addReq.Address, s, b)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(address)
 	})
 }
 
 // add adds a BTC wallet if it doesn't already exist and imports its associated transactions
-func add(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Client) error {
+func add(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Client) (*AddressesRecord, error) {
+	address := &AddressesRecord{}
+
 	_, err := s.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 
 		now := time.Now()
@@ -168,17 +175,21 @@ func add(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Clie
 			}
 		}
 
-		// todo: automatically sync transactions relevant to this address
+		// immediately sync transactions relevant to this address
+		address, _, err = sync(ctx, txn, b, addr, "")
+		if err != nil {
+			return err
+		}
 
 		return txn.BufferWrite([]*spanner.Mutation{mut})
 	})
 
-	return err
+	return address, err
 }
 
 // GetBalanceHandler returns a closure responsible for validating the incoming request
 // and invoking balance() to fetch the provided address' balance
-func GetBalanceHandler(ctx context.Context, s *spanner.Client) http.Handler {
+func GetBalanceHandler(ctx context.Context, s *spanner.Client, b *blockchair.Client) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
@@ -192,7 +203,7 @@ func GetBalanceHandler(ctx context.Context, s *spanner.Client) http.Handler {
 			return
 		}
 
-		b, err := balance(ctx, s, balanceReq.Address)
+		b, err := balance(ctx, s, b, balanceReq.Address)
 
 		if err != nil {
 			http.Error(w, fmt.Sprintf("could not get balance for address %s\n. %v", balanceReq.Address, err), http.StatusInternalServerError)
@@ -207,19 +218,33 @@ func GetBalanceHandler(ctx context.Context, s *spanner.Client) http.Handler {
 
 // balance gets the current balance of the give BTC address
 // note: the returned value can be out of date, if we want the most up-to-date balance, we have to call `sync` first
-func balance(ctx context.Context, s *spanner.Client, addr string) (float64, error) {
-	row, err := s.Single().ReadRow(ctx, addressesTable, spanner.Key{addr}, []string{"balance"})
+func balance(ctx context.Context, s *spanner.Client, b *blockchair.Client, addr string) (float64, error) {
+	var addressRec *AddressesRecord
+
+	_, err := s.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+		row, readErr := txn.ReadRow(ctx, addressesTable, spanner.Key{addr}, []string{"last_txn_hash"})
+		if readErr != nil {
+			return readErr
+		}
+
+		var lastTxnHash string
+		row.ColumnByName("last_txn_hash", &lastTxnHash)
+
+		address, _, syncErr := sync(ctx, txn, b, addr, lastTxnHash)
+		if syncErr != nil {
+			return syncErr
+		}
+
+		addressRec = address
+
+		return nil
+	})
 
 	if err != nil {
 		return 0, err
 	}
 
-	var rec AddressesRecord
-	if err := row.ToStruct(&rec); err != nil {
-		return 0, err
-	}
-
-	return rec.Balance, nil
+	return addressRec.Balance, nil
 }
 
 // GetTransactionsHandler returns a closure responsible for validating the incoming request
@@ -251,9 +276,8 @@ func GetTransactionsHandler(ctx context.Context, s *spanner.Client, b *blockchai
 
 // transactions gets the current transactions associated with the provided BTC address (mapped key-value "txn_hash" -> txn struct)
 // limitations: the first time this is called for an address, historical transactions may take a while to be fetched and
-func transactions(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Client) (map[string]*blockchair.TransactionWrapper, error) {
-	txns := make(map[string]*blockchair.TransactionWrapper)
-	now := time.Now()
+func transactions(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Client) ([]*TransactionsRecord, error) {
+	var txnsRecs []*TransactionsRecord
 
 	_, err := s.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 
@@ -263,98 +287,25 @@ func transactions(ctx context.Context, addr string, s *spanner.Client, b *blockc
 			FROM transactions t
 			JOIN addresses a USING(public_key)
 			WHERE public_key = @address
+			LIMIT @limit
 		`)
 		stmt.Params["address"] = addr
+		stmt.Params["limit"] = 1 // we only need to know if we've ever processed txns for this address before
 
 		iter := txn.Query(ctx, stmt)
 		defer iter.Stop()
 
-		_, err := iter.Next()
+		row, err := iter.Next()
 
-		// if no associated txns found, we need to pull them for the first time
-		// todo: refactor this into its own helper func - probably called something like getAllTxnsForAddr()
-		if err == iterator.Done {
-			addrStats, addrStatsErr := getAddrStats(ctx, b, addr)
-
-			if addrStatsErr != nil {
-				return addrStatsErr
-			}
-
-			txnHashes := addrStats.Txns
-
-			// the blockchair api limits calls to their /transactions endpoint for up to 10 txn hashes
-			// ideally, we'd parallelize these chunks and/or kick off a job instead of doing this here
-
-			// group the list of all transactions into chunks of 10
-			var chunks [][]string
-			for i := 0; i < len(txnHashes); i += 10 {
-				end := i + 10
-
-				if end > len(txnHashes) {
-					end = len(txnHashes)
-				}
-
-				chunks = append(chunks, txnHashes[i:end])
-			}
-
-			// for each chunk, get the transaction data
-			for _, chunk := range chunks {
-				resp, getTxnsErr := b.GetTransactionsByHashes(ctx, chunk)
-				if getTxnsErr != nil {
-					return getTxnsErr
-				}
-
-				txns = mergeTxnMaps(txns, resp.Data)
-			}
-
-			// insert the transaction data into our tables
-			mutations := []*spanner.Mutation{}
-			for _, v := range txns {
-				rec := &TransactionsRecord{
-					TxnHash:      v.Txn.Hash,
-					PublicKey:    addr,
-					Amount:       v.Txn.AmountUSD,
-					Fee:          v.Txn.FeeUSD,
-					TxnTimestamp: v.Txn.Timestamp,
-					CreatedAt:    now,
-				}
-
-				mut, err := spanner.InsertStruct(transactionsTable, rec)
-				if err != nil {
-					return err
-				}
-
-				mutations = append(mutations, mut)
-			}
-
-			// update the addresses table to match newest data returned by our api (primarily balance + last_txn_hash)
-			rec := &AddressesRecord{
-				PublicKey:   addr,
-				Balance:     addrStats.Addr.BalanceUSD,
-				CreatedAt:   now,
-				UpdatedAt:   now,
-				LastTxnHash: addrStats.Txns[0],
-			}
-
-			mut, insertErr := spanner.InsertOrUpdateStruct(addressesTable, rec)
-			if insertErr != nil {
-				return insertErr
-			}
-
-			mutations = append(mutations, mut)
-
-			if writeErr := txn.BufferWrite(mutations); writeErr != nil {
-				return writeErr
-			}
+		var lastTxnHash string
+		if err != iterator.Done {
+			row.ColumnByName("last_txn_hash", &lastTxnHash)
 		}
 
-		// if we already have some associated transactions, we only have to query for transactioins since the last_txn_hash onwards
+		_, txns, err := sync(ctx, txn, b, addr, lastTxnHash)
 
-		// todo: add the txn data we already have from spanner into our result set
-		// todo: read blockchair api (filtered by timestamp)
+		txnsRecs = txns
 
-		// todo: insert these transactions in spanner (append-only)
-		// todo: update the addresses table (balance + last_txn_hash) -> can be refactored into a helper func
 		return nil
 	})
 
@@ -362,10 +313,83 @@ func transactions(ctx context.Context, addr string, s *spanner.Client, b *blockc
 		return nil, err
 	}
 
-	return txns, nil
+	return txnsRecs, nil
 }
 
-// getAddrStats wraps the blockchair API call to GetAddressStats to reduce repeating ourselves
+// sync fetches the latest address & transaction data from the blockchair API
+func sync(ctx context.Context, txn *spanner.ReadWriteTransaction, b *blockchair.Client, addr, lastTxnHash string) (*AddressesRecord, []*TransactionsRecord, error) {
+	var address *AddressesRecord
+	var transactions []*TransactionsRecord
+
+	now := time.Now()
+
+	// pull the latest transaction data for this address
+	addrStats, err := getAddrStats(ctx, b, addr)
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// find the cutoff point and filter out txn hashes that we've already seen/processed if we know it
+	txnHashes := addrStats.Txns
+	for i, v := range addrStats.Txns {
+		if v == lastTxnHash {
+			txnHashes = txnHashes[:i]
+			break
+		}
+	}
+
+	txns, err := getTransactions(ctx, b, txnHashes)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// insert the transaction data into our tables
+	mutations := []*spanner.Mutation{}
+	for _, v := range txns {
+		rec := &TransactionsRecord{
+			TxnHash:      v.Txn.Hash,
+			PublicKey:    addr,
+			Amount:       v.Txn.AmountUSD,
+			Fee:          v.Txn.FeeUSD,
+			TxnTimestamp: v.Txn.Timestamp,
+			CreatedAt:    now,
+		}
+
+		transactions = append(transactions, rec)
+
+		mut, err := spanner.InsertStruct(transactionsTable, rec)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		mutations = append(mutations, mut)
+	}
+
+	// update the addresses table to match newest data returned by our api (primarily balance + last_txn_hash)
+	address = &AddressesRecord{
+		PublicKey:   addr,
+		Balance:     addrStats.Addr.BalanceUSD,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		LastTxnHash: addrStats.Txns[0],
+	}
+
+	mut, err := spanner.InsertOrUpdateStruct(addressesTable, address)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	mutations = append(mutations, mut)
+
+	if err := txn.BufferWrite(mutations); err != nil {
+		return nil, nil, err
+	}
+
+	return address, transactions, err
+}
+
+// getAddrStats gets the AddressStats for the provided address via the Blockchair API
 func getAddrStats(ctx context.Context, b *blockchair.Client, addr string) (*blockchair.AddressStats, error) {
 	statsResp, err := b.GetAddressStats(ctx, addr)
 
@@ -374,6 +398,37 @@ func getAddrStats(ctx context.Context, b *blockchair.Client, addr string) (*bloc
 	}
 
 	return statsResp.Data[addr], nil
+}
+
+// getTransactions gets all transaction data for provided txn hashes via the Blockchair API (in batches of 10)
+// note: the blockchair api limits calls to their /transactions endpoint for up to 10 txn hashes
+// ideally, we'd parallelize these chunks and/or kick off a job instead of blocking execution
+func getTransactions(ctx context.Context, b *blockchair.Client, txnHashes []string) (map[string]*blockchair.TransactionWrapper, error) {
+	txns := make(map[string]*blockchair.TransactionWrapper)
+
+	// group the list of all transactions into chunks of 10
+	var batches [][]string
+	for i := 0; i < len(txnHashes); i += 10 {
+		end := i + 10
+
+		if end > len(txnHashes) {
+			end = len(txnHashes)
+		}
+
+		batches = append(batches, txnHashes[i:end])
+	}
+
+	// for each batch, get the transaction data
+	for _, batch := range batches {
+		resp, err := b.GetTransactionsByHashes(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+
+		txns = mergeTxnMaps(txns, resp.Data)
+	}
+
+	return txns, nil
 }
 
 // mergeTxnMaps merges the two provided maps of ("txn_hash" -> txn struct) into one

@@ -16,39 +16,46 @@ const (
 	TransactionLimit = 100 // maximum allowed by the Blockchair API for dashborad/address endpoints
 )
 
+// Config represents the Blockchair API client configuration
 type Config struct {
 	BaseURL string
 }
 
-// Blockchair represents a minimal http client that interacts with the Blockchair API
+// Client represents a minimal http client that interacts with the Blockchair API
 type Client struct {
 	config *Config
 	client *http.Client
 }
 
+// AddressStatsResponse represents the top-level envelope we expect from the address stats endpoint
 type AddressStatsResponse struct {
 	Data map[string]*AddressStats `json:"data"`
 }
 
+// AddressStats represents the primary payload we expect from the address stats endpoint
 type AddressStats struct {
 	Addr *Address `json:"address"`
 	Txns []string `json:"transactions"`
 }
 
+// Address represents a minimal BTC address object
 type Address struct {
 	AddressType string  `json:"type"`
 	Balance     int     `json:"balance"`
 	BalanceUSD  float64 `json:"balance_usd"`
 }
 
+// TransactionsResponse represents the top-level envelope we expect from the transactions stats endpoint (batched)
 type TransactionsResponse struct {
 	Data map[string]*TransactionWrapper `json:"data"`
 }
 
+// TransactionWrapper represents the top-level envelope from the transactions stats endpoint (single)
 type TransactionWrapper struct {
 	Txn *Transaction `json:"transaction"`
 }
 
+// Transaction represents a minimal BTC transaction object
 type Transaction struct {
 	Hash      string    `json:"hash"`
 	Timestamp time.Time `json:"time"`
@@ -119,9 +126,10 @@ func (b *Client) GetAddressStats(ctx context.Context, addr string) (*AddressStat
 	return &addrStats, nil
 }
 
-// GetTransactions queries the Blockchair API for transaction data by a list ids (hashes)
-// todo: parallelize me using goroutines / channels to speed up API consumption, though note maps are not goroutine-safe; see https://go.dev/blog/maps
+// GetTransactionsByHashes queries the Blockchair API for transaction data by a list ids (hashes)
 func (b *Client) GetTransactionsByHashes(ctx context.Context, txnHashes []string) (*TransactionsResponse, error) {
+
+	// todo: parallelize me using goroutines / channels to speed up API consumption, though note maps are not goroutine-safe; see https://go.dev/blog/maps
 
 	// the blockchair API limits these requests to 10
 	if len(txnHashes) > 10 {
