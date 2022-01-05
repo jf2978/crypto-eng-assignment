@@ -17,7 +17,7 @@ In case you don't already have it handy, the original instructions are [here](ht
 
 ### Future Goals ("Nice-to-haves")
 
-These are some things that I'lll keep in mind (both as potential considerations for designing the system and for neat additions that weren't explicitly asked for). Not the focus here, but helpful to enumerate these nonetheless.
+These are some things that I'll keep in mind (both as potential considerations for designing the system and for neat additions that weren't explicitly asked for). Not the focus here, but helpful to enumerate these nonetheless.
 
 - Allow for a user to give each address a nickname
 - Transactionalize create/update endpoints where applicable (best practice)
@@ -34,7 +34,7 @@ Transactions, wallets, users, etc. are naturally relational and the structure ta
 
 ### Tables
 
-The `users` table would be responsible for storing a naive implementation of a user for this web app
+The `users` table would be responsible for storing a naive implementation of a user for this web app. TBD transfer functionality in which a user can have multiple addresses.
 
 | field     | type       | description                       |
 |-----------|------------|-----------------------------------|
@@ -78,3 +78,24 @@ The actions we want to implement are pretty much outlined in the instructions. A
 3. `func transactions(addr string) []*Transaction`: transactions gets the current transactions associated with the provided BTC address
 4. `func sync(addr string)`: sync fetches the latest address data from the BTC blockchain and synchronizes the relevant tables accordingly
 5. `func detectTransfers`: **TBD**
+
+## Questions
+
+- What challenges do you anticipate building and running this system?
+
+This system in particular requires a nuanced understanding of the API and structure of the blockchain data being fetched. Blockchain data is constantly updated globally, so the likelihood of stale data is high (requiring continous syncing of some sort in the real world) and a tradeoff is when shaping that blockchain data into database schemas (pros: transactionalized reads/writes, possible to leverage relationships between tables; cons: using rigid schemas require maintenance and/or migrations if doing anything beyond adding a new column, syncing can take a long time and the API used a bottleneck, very intentional thinking around the UX is probably necessary in order to know how these tradeoffs should land).
+
+Ideally (or at least in a less time-boxed cirumstances), we would be optimize sync to be parallelizable (using goroutines, some sort of job infrastructure or leveraging a message broker like Pub/Sub)
+
+- How will you test your system?
+
+1. Unit tests for isolated, one-off functions like helpers, batching logic, etc.
+2. Integration tests particularly between our database (Spanner in this case) and our blockchain data API
+
+- How will you monitor system health in production?
+
+First, I'd need to update the logs to be more informative (include context, expected data, the request itself, etc.) to establish some baseline visibility. If a stack similar to the one used here, we could use/export logs in GCP including request traces and database query speeds.
+
+From there, we could build log-based alerts per API endpoint that'd trigger on expected errors as well as a general health-check ping that could regularly check that the service is returning OK responses where we expect it to.
+
+Lots of how these would be communicated are then team dependent -- maybe these alerts hook into particular slack channels for the team to respond to, or generate a ticket
