@@ -34,7 +34,7 @@ Transactions, wallets, users, etc. are naturally relational and the structure ta
 
 ### Tables
 
-The `users` table would be responsible for storing a naive implementation of a user for this web app. TBD transfer functionality in which a user can have multiple addresses.
+The `users` table would be responsible for storing a naive implementation of a user for this web app. This ended up not being used, but would prove useful in more realistic circumstances!
 
 | field     | type       | description                       |
 |-----------|------------|-----------------------------------|
@@ -89,8 +89,9 @@ Ideally (or at least in a less time-boxed cirumstances), we would be optimize sy
 
 - How will you test your system?
 
-1. Unit tests for isolated, one-off functions like helpers, batching logic, etc. Go table-driven testing could prove particularly useful here (testing the different types of payloads each handler can receive, etc.)
-2. Integration tests particularly between our database (Spanner in this case) and our blockchain data API
+Unit tests for isolated, one-off functions like helpers, batching logic, etc. Go table-driven testing and/or golden files could prove particularly useful to implement solid test coverage here.
+
+Integration tests particularly between our database (Spanner in this case) and our blockchain data API
 
 - How will you monitor system health in production?
 
@@ -99,3 +100,114 @@ First, I'd need to update the logs to be more informative (include context, expe
 From there, we could build log-based alerts per API endpoint that'd trigger on expected errors as well as a general health-check ping that could regularly check that the service is returning OK responses where we expect it to.
 
 Lots of how these would be communicated are then team dependent -- maybe these alerts hook into particular slack channels for the team to respond to, or generate a bug ticket, etc.
+
+## Usage
+
+Here are a few example commands used to demonstrate the working server (and its output):
+
+```bash
+# in a separate tab
+➜  cointracker-eng-assignment git:(main) ✗ go run main.go
+2022/01/05 14:15:40 Listening on port 8080...
+
+# adding a new BTC wallet
+➜  cointracker-eng-assignment git:(main) curl -X POST http://localhost:8080/add -H "Content-Type: application/json" -d @test_json/happy_path.json | jq
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   304  100   251  100    53   1426    301 --:--:-- --:--:-- --:--:--  1727
+{
+  "address": {
+    "PublicKey": "3E8ociqZa9mZUSwGdSmAEMAoAxBK3FNDcd",
+    "Balance": 686.54901305,
+    "CreatedAt": "2022-01-05T05:32:09.740009Z",
+    "UpdatedAt": "2022-01-05T05:32:09.740009Z",
+    "LastTxnHash": "f72b90635567150f41840426e522989ebf00718aa30f6ffb4bd766d968af88bb"
+  }
+}
+
+# getting a wallet's balance
+➜  cointracker-eng-assignment git:(main) ✗ curl -X POST http://localhost:8080/balance -H "Content-Type: application/json" -d @test_json/happy_path.json | jq
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100    77  100    24  100    53      7     16  0:00:03  0:00:03 --:--:--    24
+{
+  "balance": 730.7941962
+}
+
+# getting all transactions (only 5 shown here)
+{
+  "transactions": [
+    {
+      "TxnHash": "",
+      "PublicKey": "3E8ociqZa9mZUSwGdSmAEMAoAxBK3FNDcd",
+      "Amount": 832564,
+      "Fee": 7.31006,
+      "Tags": "",
+      "TxnTimestamp": "2021-11-09T07:56:15Z",
+      "CreatedAt": "0001-01-01T00:00:00Z"
+    },
+    {
+      "TxnHash": "",
+      "PublicKey": "3E8ociqZa9mZUSwGdSmAEMAoAxBK3FNDcd",
+      "Amount": 68898.8,
+      "Fee": 20.8019,
+      "Tags": "",
+      "TxnTimestamp": "2021-12-29T17:55:43Z",
+      "CreatedAt": "0001-01-01T00:00:00Z"
+    },
+    {
+      "TxnHash": "",
+      "PublicKey": "3E8ociqZa9mZUSwGdSmAEMAoAxBK3FNDcd",
+      "Amount": 541962,
+      "Fee": 15.6571,
+      "Tags": "",
+      "TxnTimestamp": "2021-12-30T11:30:00Z",
+      "CreatedAt": "0001-01-01T00:00:00Z"
+    },
+    {
+      "TxnHash": "",
+      "PublicKey": "3E8ociqZa9mZUSwGdSmAEMAoAxBK3FNDcd",
+      "Amount": 30198.8,
+      "Fee": 1.17351,
+      "Tags": "",
+      "TxnTimestamp": "2021-12-08T07:59:29Z",
+      "CreatedAt": "0001-01-01T00:00:00Z"
+    },
+    {
+      "TxnHash": "",
+      "PublicKey": "3E8ociqZa9mZUSwGdSmAEMAoAxBK3FNDcd",
+      "Amount": 38987.9,
+      "Fee": 20.0698,
+      "Tags": "",
+      "TxnTimestamp": "2021-11-20T16:05:53Z",
+      "CreatedAt": "0001-01-01T00:00:00Z"
+    }
+}
+
+# manually syncing the wallet
+➜  cointracker-eng-assignment git:(main) ✗ curl -X POST http://localhost:8080/sync -H "Content-Type: application/json" -d @test_json/happy_path.j
+son | jq
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   315  100   262  100    53    713    144 --:--:-- --:--:-- --:--:--   858
+{
+  "address": {
+    "PublicKey": "3E8ociqZa9mZUSwGdSmAEMAoAxBK3FNDcd",
+    "Balance": 730.7941962,
+    "CreatedAt": "2022-01-05T14:26:01.7219867-05:00",
+    "UpdatedAt": "2022-01-05T14:26:01.7219867-05:00",
+    "LastTxnHash": "ac0d773d7b0a6eb650eff8a40dd5be4b4a370bf28aa30767d783ba4b5929d6f6"
+  }
+}
+
+# detect likely transfers
+➜  cointracker-eng-assignment git:(main) ✗ curl -X POST http://localhost:8080/detect-transfer -H "Content-Type: application/json" -d @test_json/detect_transfers_multiple_possible_transfers.json | jq
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100  1326  100    42  100  1284  42000  1253k --:--:-- --:--:-- --:--:-- 1294k
+{
+  "tx_id_1": "tx_id_3",
+  "tx_id_5": "tx_id_4"
+}
+
+```
