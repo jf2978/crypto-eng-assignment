@@ -13,7 +13,7 @@ import (
 const (
 	BaseUrl          = "https://api.blockchair.com/"
 	DefaultTimeout   = 10 * time.Second
-	TransactionLimit = 100 // maximum allowed by the Blockchair API for dashborad/address endpoints
+	TransactionLimit = 50 // maximum allowed by the Blockchair API for dashborad/address endpoints
 )
 
 // Config represents the Blockchair API client configuration

@@ -12,7 +12,6 @@ import (
 	"cloud.google.com/go/spanner"
 	"github.com/gorilla/mux"
 	"github.com/jf2978/cointracker-eng-assignment/blockchair"
-	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 )
@@ -30,14 +29,39 @@ type AddRequest struct {
 	Address string `json:"address"`
 }
 
+// AddResponse represents the expected response body to '/add'
+type AddResponse struct {
+	Address *AddressesRecord `json:"address"`
+}
+
 // BalanceRequest represents the expected request body to '/balance'
 type BalanceRequest struct {
 	Address string `json:"address"`
 }
 
+// BalanceResponse represents the expected request body to '/balance'
+type BalanceResponse struct {
+	Balance float64 `json:"balance"`
+}
+
 // TransactionsRequest represents the expected request body to '/transactions'
 type TransactionsRequest struct {
 	Address string `json:"address"`
+}
+
+// TransactionsResponse represents the expected response body to '/transactions'
+type TransactionsResponse struct {
+	Transactions []*TransactionsRecord `json:"transactions"`
+}
+
+// SyncRequest represents the expected request body to '/sync'
+type SyncRequest struct {
+	Address string `json:"address"`
+}
+
+// SyncResponse represents the expected response body to '/sync'
+type SyncResponse struct {
+	Address *AddressesRecord `json:"address"`
 }
 
 // AddressesRecord is the data model for a respective row in the 'addresses' table stored in Spanner
@@ -62,8 +86,8 @@ type TransactionsRecord struct {
 
 const (
 	// server configuration
-	address = "localhost"
-	port    = "8080"
+	endpoint = "localhost"
+	port     = "8080"
 
 	// todo: replace with better names & use environment variables in the real world
 	projectID  = "cointracker-test-1234"
@@ -90,11 +114,10 @@ func InitServer() *Server {
 	blockchairClient := blockchair.NewClient(ctx)
 
 	r := mux.NewRouter()
-
-	// todo: rename routes to better reflect specific functionality (i.e. we're only handling btc addresses)
 	r.Handle("/add", AddHandler(ctx, spannerClient, blockchairClient))
 	r.Handle("/balance", GetBalanceHandler(ctx, spannerClient, blockchairClient))
 	r.Handle("/transactions", GetTransactionsHandler(ctx, spannerClient, blockchairClient))
+	r.Handle("/sync", SyncHandler(ctx, spannerClient, blockchairClient))
 
 	return &Server{
 		context:    ctx,
@@ -132,9 +155,11 @@ func AddHandler(ctx context.Context, s *spanner.Client, b *blockchair.Client) ht
 			return
 		}
 
+		addrResp := &AddResponse{Address: address}
+
 		w.WriteHeader(http.StatusOK)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(address)
+		json.NewEncoder(w).Encode(addrResp)
 	})
 }
 
@@ -145,10 +170,16 @@ func add(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Clie
 	_, err := s.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 
 		now := time.Now()
-		_, err := txn.ReadRow(ctx, addressesTable, spanner.Key{addr}, []string{"public_key", "created_at", "updated_at"})
+		row, err := txn.ReadRow(ctx, addressesTable, spanner.Key{addr}, []string{"public_key", "balance", "last_txn_hash", "created_at", "updated_at"})
 
-		// this address already exists in the addresses table, no-op
+		// this address already exists in the addresses table, we're done
 		if err == nil {
+			var addrRec AddressesRecord
+			if structErr := row.ToStruct(&addrRec); structErr != nil {
+				return structErr
+			}
+
+			address = &addrRec
 			return nil
 		}
 
@@ -210,9 +241,11 @@ func GetBalanceHandler(ctx context.Context, s *spanner.Client, b *blockchair.Cli
 			return
 		}
 
+		balanceResp := &BalanceResponse{Balance: b}
+
 		w.WriteHeader(http.StatusOK)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(b)
+		json.NewEncoder(w).Encode(balanceResp)
 	})
 }
 
@@ -263,14 +296,18 @@ func GetTransactionsHandler(ctx context.Context, s *spanner.Client, b *blockchai
 			return
 		}
 
-		fmt.Printf("helloooo\n")
-
-		_, err = transactions(ctx, txnsReq.Address, s, b)
+		txnsRecs, err := transactions(ctx, txnsReq.Address, s, b)
 
 		if err != nil {
 			http.Error(w, fmt.Sprintf("could not get transactions for address %s\n. %v", txnsReq.Address, err), http.StatusInternalServerError)
 			return
 		}
+
+		txnsResp := &TransactionsResponse{Transactions: txnsRecs}
+
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(txnsResp)
 	})
 }
 
@@ -283,28 +320,60 @@ func transactions(ctx context.Context, addr string, s *spanner.Client, b *blockc
 
 		// read for transactions associated with this address
 		stmt := spanner.NewStatement(`
-			SELECT t.txn_hash, t.public_key, t.amount, t.fee, a.last_txn_hash, t.txn_timestamp,
+			SELECT t.txn_hash, t.public_key, t.amount, t.fee, t.tags, t.txn_timestamp, a.last_txn_hash
 			FROM transactions t
 			JOIN addresses a USING(public_key)
 			WHERE public_key = @address
-			LIMIT @limit
 		`)
 		stmt.Params["address"] = addr
-		stmt.Params["limit"] = 1 // we only need to know if we've ever processed txns for this address before
+
+		lastTxnHash := ""
 
 		iter := txn.Query(ctx, stmt)
-		defer iter.Stop()
+		iterErr := iter.Do(func(row *spanner.Row) error {
 
-		row, err := iter.Next()
+			type JoinedRecord struct {
+				TxnHash      string    `spanner:"txn_hash"`
+				PublicKey    string    `spanner:"public_key"`
+				Amount       float64   `spanner:"amount"`
+				Fee          float64   `spanner:"fee"`
+				Tags         string    `spanner:"tags`
+				TxnTimestamp time.Time `spanner:"txn_timestamp"`
+				LastTxnHash  string    `spanner:"last_txn_hash"`
+			}
 
-		var lastTxnHash string
-		if err != iterator.Done {
-			row.ColumnByName("last_txn_hash", &lastTxnHash)
+			var rec JoinedRecord
+			row.ToStruct(&rec)
+
+			txnsRecs = append(txnsRecs, &TransactionsRecord{
+				PublicKey:    rec.PublicKey,
+				Amount:       rec.Amount,
+				Fee:          rec.Fee,
+				Tags:         rec.Tags,
+				TxnTimestamp: rec.TxnTimestamp,
+			})
+
+			fmt.Printf("joined struct: %+v\n", rec)
+
+			if len(lastTxnHash) == 0 {
+				lastTxnHash = rec.LastTxnHash
+			}
+
+			return nil
+		})
+
+		if iterErr != nil {
+			return iterErr
 		}
 
-		_, txns, err := sync(ctx, txn, b, addr, lastTxnHash)
+		fmt.Printf("last txn hash found: %s\n", lastTxnHash)
 
-		txnsRecs = txns
+		_, txns, syncErr := sync(ctx, txn, b, addr, lastTxnHash)
+		if syncErr != nil {
+			return syncErr
+		}
+
+		txnsRecs = append(txnsRecs, txns...)
 
 		return nil
 	})
@@ -314,6 +383,57 @@ func transactions(ctx context.Context, addr string, s *spanner.Client, b *blockc
 	}
 
 	return txnsRecs, nil
+}
+
+// SyncHandler returns a closure responsible for validating the incoming request
+// and invoking sync() to trigger an update for the provided address (and its transactions)
+func SyncHandler(ctx context.Context, s *spanner.Client, b *blockchair.Client) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var syncReq SyncRequest
+		if err := json.Unmarshal(body, &syncReq); err != nil {
+			http.Error(w, "provided payload is not valid JSON", http.StatusBadRequest)
+			return
+		}
+
+		addr := syncReq.Address
+
+		var syncResp *SyncResponse
+		_, err = s.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
+			row, readErr := txn.ReadRow(ctx, addressesTable, spanner.Key{addr}, []string{"last_txn_hash"})
+			if readErr != nil {
+				return readErr
+			}
+
+			var lastTxnHash string
+			row.ColumnByName("last_txn_hash", &lastTxnHash)
+
+			addressRec, _, syncErr := sync(ctx, txn, b, addr, lastTxnHash)
+			if syncErr != nil {
+				return syncErr
+			}
+
+			syncResp = &SyncResponse{
+				Address: addressRec,
+			}
+
+			return nil
+		})
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(syncResp)
+	})
 }
 
 // sync fetches the latest address & transaction data from the blockchair API
@@ -330,12 +450,16 @@ func sync(ctx context.Context, txn *spanner.ReadWriteTransaction, b *blockchair.
 		return nil, nil, err
 	}
 
-	// find the cutoff point and filter out txn hashes that we've already seen/processed if we know it
 	txnHashes := addrStats.Txns
-	for i, v := range addrStats.Txns {
-		if v == lastTxnHash {
-			txnHashes = txnHashes[:i]
-			break
+
+	// find the cutoff point and filter out txn hashes that we've already seen/processed if we know it
+	if len(lastTxnHash) > 0 {
+		for i, v := range addrStats.Txns {
+			if v == lastTxnHash {
+				txnHashes = txnHashes[:i]
+				break
+			}
+			fmt.Printf("skipping transaction sync: %s\n", v)
 		}
 	}
 
@@ -420,10 +544,14 @@ func getTransactions(ctx context.Context, b *blockchair.Client, txnHashes []stri
 
 	// for each batch, get the transaction data
 	for _, batch := range batches {
+		fmt.Printf("processing batch: %v ...\n", batch)
+
 		resp, err := b.GetTransactionsByHashes(ctx, batch)
 		if err != nil {
 			return nil, err
 		}
+
+		fmt.Printf("processed batch: %+v ...\n", resp.Data)
 
 		txns = mergeTxnMaps(txns, resp.Data)
 	}
@@ -445,6 +573,6 @@ func main() {
 
 	log.Printf("Listening on port %s...\n", port)
 	log.Fatal(http.ListenAndServe(
-		fmt.Sprintf("%s:%s", address, port), server.router),
+		fmt.Sprintf("%s:%s", endpoint, port), server.router),
 	)
 }
