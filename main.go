@@ -560,22 +560,14 @@ func DetectTransfersHandler(ctx context.Context, s *spanner.Client) http.Handler
 	})
 }
 
-// detectTransfers detects the likely transfers between a user's wallets with fuzzy matching based on transaction
-// amounts and corresponding timestamps
+// detectTransfers detects the likely transfers between a user's wallets with fuzzy matching based on transaction amounts and corresponding timestamps
+// note this algorithm can be extended to bucket sort based on time ranges (exact timestamp match is probably unrealistic), but the simpler version is implemented here
 func detectTransfers(txns []*CustomTxn) (map[string]string, error) {
 	// todo: (nice to have) group addresses into "user wallets" and save them to the users table
 
 	// brute force -> compare all possible pairs w/ nested iteration. O(1) space, but O(n^2) time (no bueno)
-
-	// alternative (sorting) -> sort transactions by timestamp, for each timestamp/range bucket,
+	// alternative approach (sorting) -> sort transactions by timestamp, for each timestamp/range bucket,
 	// look for out/in pairs s.t. amounts & wallets are equivalent. O(n) space and O(nlogn) time where n = # of transactions
-
-	// simpler version to start can assume timestamps are exact matches
-	// can be extended to use buckets and time ranges instead
-
-	/* for _, v := range txns {
-		fmt.Printf("unsorted transaction: %+v\n", v)
-	} */
 
 	// sort transactions by timestamp and amount if timestamps are equal
 	sort.Slice(txns, func(i, j int) bool {
@@ -590,11 +582,29 @@ func detectTransfers(txns []*CustomTxn) (map[string]string, error) {
 		return false
 	})
 
-	/* for _, v := range txns {
-		fmt.Printf("sorted transaction: %+v\n", v)
-	} */
+	result := map[string]string{} // map from withdrawing txn -> deposit txn
 
-	return nil, nil
+	// iterate through ther transaction pairs, pulling the txn hashes that are likely transfers
+	for i, j := 0, 1; j < len(txns); i, j = i+1, j+1 {
+
+		if txns[i].TxnTimestamp.Equal(txns[j].TxnTimestamp) &&
+			txns[i].AmountUSD == txns[j].AmountUSD &&
+			txns[i].TxnFlow != txns[j].TxnFlow &&
+			txns[i].WalletID != txns[j].WalletID {
+
+			// prefer mapping outflow -> inflow transactions in our result set
+			outflow, inflow := txns[i], txns[j]
+			if txns[i].TxnFlow == "in" {
+				outflow, inflow = txns[j], txns[i]
+			}
+
+			result[outflow.TxnID] = inflow.TxnID
+
+			fmt.Printf("transfer detected!: %s -> %s", outflow.TxnID, inflow.TxnID)
+		}
+	}
+
+	return result, nil
 
 	// todo: (nice to have) save this detected and add tag to transactions by hash id + this address (composite key)
 }
