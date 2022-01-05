@@ -54,13 +54,14 @@ The `addresses` table stores the public key addresses added to the app
 | updated_at    | TIMESTAMP  | the point in time this record was last updated (UTC)        |
 | last_txn_hash | STRING MAX | the most recent transaction hash associated to this address |
 
-The `transactions` table is responsible for storing blockchain transactions being tracked (append-only)
+The `transactions` table is responsible for storing blockchain transactions being tracked (append-only). We use a composite pk (txn_hash, public_key)
+here because a single transaction hash can theoretically be associated to multiple addresses (e.g. 1 sender, n recipients)
 
 | field           | type                | description                                                                                              |
 |-----------------|---------------------|----------------------------------------------------------------------------------------------------------|
-| txn_hash(pk)    | STRING MAX          | this transactions identifier hash                                                                        |
+| txn_hash (pk)   | STRING MAX          | this transactions identifier hash
+| public_key (pk) | STRING MAX          | the participating addresses (public keys) in this txn                                                    |
 | txn_timestamp   | TIMESTAMP           | the time this transaction was verified on theblockchain                                                  |
-| addresses       | ARRAY<STRING(MAX)>  | the participating addresses (public keys) in this txn                                                    |
 | amount          | FLOAT64             | the value being transacted in USD                                                                        |
 | fee             | FLOAT64             | the fee incurred for this transacton in USD                                                              |
 | created_at      | TIMESTAMP           | the point in time this record was created (UTC)                                                          |
