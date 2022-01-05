@@ -77,7 +77,7 @@ The actions we want to implement are pretty much outlined in the instructions. A
 2. `func balance(addr string) float64`: balance gets the current balance of the give BTC address (note: the returned value can be out of date, if we want the most up-to-date balance, we have to call `sync` first)
 3. `func transactions(addr string) []*Transaction`: transactions gets the current transactions associated with the provided BTC address
 4. `func sync(addr string)`: sync fetches the latest address data from the BTC blockchain and synchronizes the relevant tables accordingly
-5. `func detectTransfers`: **TBD**
+5. `func detectTransfers`: detectTransfers detects the likely transfers between a user's wallets with fuzzy matching based on transaction amounts and corresponding timestamps (+- a few mins)
 
 ## Questions
 
@@ -89,7 +89,7 @@ Ideally (or at least in a less time-boxed cirumstances), we would be optimize sy
 
 - How will you test your system?
 
-1. Unit tests for isolated, one-off functions like helpers, batching logic, etc.
+1. Unit tests for isolated, one-off functions like helpers, batching logic, etc. Go table-driven testing could prove particularly useful here (testing the different types of payloads each handler can receive, etc.)
 2. Integration tests particularly between our database (Spanner in this case) and our blockchain data API
 
 - How will you monitor system health in production?
@@ -98,4 +98,4 @@ First, I'd need to update the logs to be more informative (include context, expe
 
 From there, we could build log-based alerts per API endpoint that'd trigger on expected errors as well as a general health-check ping that could regularly check that the service is returning OK responses where we expect it to.
 
-Lots of how these would be communicated are then team dependent -- maybe these alerts hook into particular slack channels for the team to respond to, or generate a ticket
+Lots of how these would be communicated are then team dependent -- maybe these alerts hook into particular slack channels for the team to respond to, or generate a bug ticket, etc.

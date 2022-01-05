@@ -64,6 +64,20 @@ type SyncResponse struct {
 	Address *AddressesRecord `json:"address"`
 }
 
+// DetectTransfersRequest represents the expected request body to '/detect-transfers'
+type DetectTransfersRequest struct {
+	Txns []*CustomTxn `json:"transactions"`
+}
+
+// CustomTxn represents the dummy transaction data used to demonstrate how we might detect transfers between wallets
+type CustomTxn struct {
+	TxnID        string    `json:"id"`
+	WalletID     string    `json:"wallet"`
+	TxnTimestamp time.Time `json:"time"`
+	TxnFlow      string    `json:"flow"` // determines whether the txn is flow "in" or "out" of the wallet specified
+	AmountUSD    float64   `json:"amount"`
+}
+
 // AddressesRecord is the data model for a respective row in the 'addresses' table stored in Spanner
 type AddressesRecord struct {
 	PublicKey   string    `spanner:"public_key"`
@@ -118,6 +132,7 @@ func InitServer() *Server {
 	r.Handle("/balance", GetBalanceHandler(ctx, spannerClient, blockchairClient))
 	r.Handle("/transactions", GetTransactionsHandler(ctx, spannerClient, blockchairClient))
 	r.Handle("/sync", SyncHandler(ctx, spannerClient, blockchairClient))
+	r.Handle("/detect-transfer", DetectTransfersHandler(ctx, spannerClient))
 
 	return &Server{
 		context:    ctx,
@@ -433,7 +448,7 @@ func sync(ctx context.Context, txn *spanner.ReadWriteTransaction, b *blockchair.
 				txnHashes = txnHashes[:i]
 				break
 			}
-			fmt.Printf("skipping transaction sync: %s\n", v)
+			fmt.Printf("skipping syncing transaction: %s\n", v)
 		}
 	}
 
@@ -485,6 +500,55 @@ func sync(ctx context.Context, txn *spanner.ReadWriteTransaction, b *blockchair.
 	}
 
 	return address, transactions, err
+}
+
+// DetectTransfersHandler returns a closure responsible for validating the incoming request
+// and invoking detectTransfers() to tag transactions that are likely transfers
+func DetectTransfersHandler(ctx context.Context, s *spanner.Client) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var detectReq DetectTransfersRequest
+		if err := json.Unmarshal(body, &detectReq); err != nil {
+			http.Error(w, "provided payload is not valid JSON", http.StatusBadRequest)
+			return
+		}
+
+		fmt.Printf("detect trasnfers request %v\n", detectReq)
+
+		txns, err := detectTransfers(detectReq.Txns)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(txns)
+	})
+}
+
+// detectTransfers detects the likely transfers between a user's wallets with fuzzy matching based on transaction
+// amounts and corresponding timestamps
+func detectTransfers(txns []*CustomTxn) (map[string]string, error) {
+	// todo: (nice to have) group addresses into "user wallets" and save them to the users table
+
+	// brute force -> compare all possible pairs w/ nested iteration. O(1) space, but O(n^2) time (no bueno)
+
+	// alternative (sorting) -> sort transactions by timestamp, for each timestamp/range bucket,
+	// look for out/in pairs s.t. amounts & wallets are equivalent. O(n) space and O(n) time where n = # of transactions
+
+	// simpler version to start can assume timestamps are exact matches
+	// can be extended to use buckets and time ranges instead
+
+	// todo: implement me (simpler version)
+
+	// todo: (nice to have) save this detected and add tag to transactions by hash id + this address (composite key)
 }
 
 // getAddrStats gets the AddressStats for the provided address via the Blockchair API
