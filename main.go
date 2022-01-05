@@ -143,12 +143,6 @@ func AddHandler(ctx context.Context, s *spanner.Client, b *blockchair.Client) ht
 			return
 		}
 
-		// super naive check to see if address is between 25 and 34 characters long
-		if len(addReq.Address) < 25 || len(addReq.Address) > 34 {
-			http.Error(w, "provided BTC address is not valid", http.StatusBadRequest)
-			return
-		}
-
 		address, err := add(ctx, addReq.Address, s, b)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -169,7 +163,6 @@ func add(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Clie
 
 	_, err := s.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 
-		now := time.Now()
 		row, err := txn.ReadRow(ctx, addressesTable, spanner.Key{addr}, []string{"public_key", "balance", "last_txn_hash", "created_at", "updated_at"})
 
 		// this address already exists in the addresses table, we're done
@@ -187,32 +180,13 @@ func add(ctx context.Context, addr string, s *spanner.Client, b *blockchair.Clie
 			return err
 		}
 
-		// create this new address
-		var mut *spanner.Mutation
-		if spanner.ErrCode(err) == codes.NotFound {
-			addrStats, err := getAddrStats(ctx, b, addr)
-
-			rec := &AddressesRecord{
-				PublicKey:   addr,
-				Balance:     addrStats.Addr.BalanceUSD,
-				CreatedAt:   now,
-				UpdatedAt:   now,
-				LastTxnHash: addrStats.Txns[0],
-			}
-
-			mut, err = spanner.InsertStruct(addressesTable, rec)
-			if err != nil {
-				return err
-			}
-		}
-
-		// immediately sync transactions relevant to this address
+		// create this address & immediately sync transactions relevant to this address
 		address, _, err = sync(ctx, txn, b, addr, "")
 		if err != nil {
 			return err
 		}
 
-		return txn.BufferWrite([]*spanner.Mutation{mut})
+		return nil
 	})
 
 	return address, err
