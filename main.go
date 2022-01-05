@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	"cloud.google.com/go/spanner"
@@ -76,6 +77,32 @@ type CustomTxn struct {
 	TxnTimestamp time.Time `json:"time"`
 	TxnFlow      string    `json:"flow"` // determines whether the txn is flow "in" or "out" of the wallet specified
 	AmountUSD    float64   `json:"amount"`
+}
+
+// UnmarshalJSON implements the Unmarshaler interface and overrides the default behavior in encoding/json
+// in order to accurately convert timestamps to a Go time.Time
+func (c *CustomTxn) UnmarshalJSON(data []byte) error {
+
+	fmt.Print("custom marshaller!")
+	var v map[string]interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		fmt.Printf("error%v\n", err)
+
+		return err
+	}
+
+	c.TxnID = v["id"].(string)
+	c.WalletID = v["wallet"].(string)
+	c.TxnFlow = v["flow"].(string)
+	c.AmountUSD = v["amount"].(float64)
+
+	rawTime, err := time.Parse("2006-01-02 15:04:05 UTC", v["time"].(string))
+	if err != nil {
+		return err
+	}
+	c.TxnTimestamp = rawTime
+
+	return nil
 }
 
 // AddressesRecord is the data model for a respective row in the 'addresses' table stored in Spanner
@@ -541,12 +568,33 @@ func detectTransfers(txns []*CustomTxn) (map[string]string, error) {
 	// brute force -> compare all possible pairs w/ nested iteration. O(1) space, but O(n^2) time (no bueno)
 
 	// alternative (sorting) -> sort transactions by timestamp, for each timestamp/range bucket,
-	// look for out/in pairs s.t. amounts & wallets are equivalent. O(n) space and O(n) time where n = # of transactions
+	// look for out/in pairs s.t. amounts & wallets are equivalent. O(n) space and O(nlogn) time where n = # of transactions
 
 	// simpler version to start can assume timestamps are exact matches
 	// can be extended to use buckets and time ranges instead
 
-	// todo: implement me (simpler version)
+	/* for _, v := range txns {
+		fmt.Printf("unsorted transaction: %+v\n", v)
+	} */
+
+	// sort transactions by timestamp and amount if timestamps are equal
+	sort.Slice(txns, func(i, j int) bool {
+		if txns[i].TxnTimestamp.Before(txns[j].TxnTimestamp) {
+			return true
+		}
+
+		if txns[i].TxnTimestamp.Equal(txns[j].TxnTimestamp) {
+			return txns[i].AmountUSD < txns[j].AmountUSD
+		}
+
+		return false
+	})
+
+	/* for _, v := range txns {
+		fmt.Printf("sorted transaction: %+v\n", v)
+	} */
+
+	return nil, nil
 
 	// todo: (nice to have) save this detected and add tag to transactions by hash id + this address (composite key)
 }
