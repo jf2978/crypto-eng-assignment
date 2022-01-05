@@ -569,14 +569,19 @@ func detectTransfers(txns []*CustomTxn) (map[string]string, error) {
 	// alternative approach (sorting) -> sort transactions by timestamp, for each timestamp/range bucket,
 	// look for out/in pairs s.t. amounts & wallets are equivalent. O(n) space and O(nlogn) time where n = # of transactions
 
-	// sort transactions by timestamp and amount if timestamps are equal
-	sort.Slice(txns, func(i, j int) bool {
+	// sort transactions by timestamp and falling back on: amount (preferring "outflows" first if equal)
+	// SliceStable ensures that equal elements maintain their order in the original list
+	sort.SliceStable(txns, func(i, j int) bool {
 		if txns[i].TxnTimestamp.Before(txns[j].TxnTimestamp) {
 			return true
 		}
 
-		if txns[i].TxnTimestamp.Equal(txns[j].TxnTimestamp) {
-			return txns[i].AmountUSD < txns[j].AmountUSD
+		if txns[i].AmountUSD < txns[j].AmountUSD {
+			return true
+		}
+
+		if txns[i].TxnTimestamp.Equal(txns[j].TxnTimestamp) && txns[i].AmountUSD == txns[j].AmountUSD {
+			return txns[i].TxnFlow == "out"
 		}
 
 		return false
@@ -592,15 +597,13 @@ func detectTransfers(txns []*CustomTxn) (map[string]string, error) {
 			txns[i].TxnFlow != txns[j].TxnFlow &&
 			txns[i].WalletID != txns[j].WalletID {
 
-			// prefer mapping outflow -> inflow transactions in our result set
-			outflow, inflow := txns[i], txns[j]
-			if txns[i].TxnFlow == "in" {
-				outflow, inflow = txns[j], txns[i]
-			}
+			result[txns[i].TxnID] = txns[j].TxnID
 
-			result[outflow.TxnID] = inflow.TxnID
+			fmt.Printf("transfer detected!: %s -> %s", txns[i].TxnID, txns[j].TxnID)
 
-			fmt.Printf("transfer detected!: %s -> %s", outflow.TxnID, inflow.TxnID)
+			// skip this pair entirely
+			i++
+			j++
 		}
 	}
 
