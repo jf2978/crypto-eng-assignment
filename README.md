@@ -1,10 +1,4 @@
-# CoinTracker Engineering Assignment
-
-Hey CoinTracker team! My name is Jeff, and thanks for taking the time to reading my technical assessment -- I'm geniunely looking forward to working on this take-home (and of course hope you all like what you see haha).
-
-In case you don't already have it handy, the original instructions are [here](https://cointracker.notion.site/CoinTracker-Engineering-Assignment-ac869846380545dbb1c8ad4f947a8e29)
-
----
+# Crypto Engineering Assignment
 
 ## Goals
 
